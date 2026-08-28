@@ -1,8 +1,10 @@
-"""Finetune CodeBERT with targeted MLM on deprecated APIs (D_forget).
+"""Finetune CodeBERT bằng MLM có chủ đích trên API deprecated (D_forget).
 
-The tokens of the deprecated API call are masked and the model must recover
-them from the surrounding code, so it learns the context deprecated APIs
-appear in.
+Che các token của lời gọi API deprecated rồi bắt model đoán lại chúng từ ngữ
+cảnh xung quanh, để model học được ngữ cảnh mà API deprecated xuất hiện.
+
+Luồng chạy: tìm vị trí API trong code (span ký tự) -> tokenize một lần và ghi
+lại token nào thuộc span đó -> che chúng ở mỗi batch -> train MLM.
 """
 import argparse
 import json
@@ -23,6 +25,11 @@ from transformers import (
 
 
 def get_args():
+    """Đọc tham số dòng lệnh.
+
+    Input : argv (train_codebert.sh truyền vào tường minh)
+    Output: Namespace chứa toàn bộ hyperparameter
+    """
     p = argparse.ArgumentParser()
     p.add_argument("--data", default="../Data-Collection/codellama/D_forget.json")
     p.add_argument("--model", default="microsoft/codebert-base-mlm")
@@ -34,11 +41,11 @@ def get_args():
     p.add_argument("--weight_decay", type=float, default=0.01)
     p.add_argument("--warmup_ratio", type=float, default=0.06)
     p.add_argument("--random_mask_prob", type=float, default=0.1,
-                   help="extra random MLM masking on non-API tokens")
+                   help="che ngẫu nhiên thêm trên token không phải API")
     p.add_argument("--val_ratio", type=float, default=0.2)
     p.add_argument("--eval_steps", type=int, default=250)
     p.add_argument("--patience", type=int, default=3,
-                   help="early stopping patience, in evaluations")
+                   help="số lần eval không cải thiện trước khi dừng")
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--fp16", action="store_true")
     p.add_argument("--report_to", default="none")
@@ -46,10 +53,15 @@ def get_args():
 
 
 # --------------------------------------------------------------------------- #
-# Locating the deprecated API inside the code
+# Tìm vị trí API deprecated trong code
 # --------------------------------------------------------------------------- #
 def surface_forms(sample):
-    """All ways the deprecated API can be written in source code."""
+    """Liệt kê mọi cách API deprecated có thể được viết trong code.
+
+    Input : sample - dict một mẫu trong D_forget.json
+    Output: list[str] các form, sắp dài trước ngắn sau
+            vd. ['numpy.product', 'np.product', 'product']
+    """
     deprecated = set(sample.get("deprecated api") or [])
     forms = set()
     for alias, full in (sample.get("alias dict") or {}).items():
@@ -62,7 +74,12 @@ def surface_forms(sample):
 
 
 def find_spans(text, forms):
-    """Non-overlapping char spans of the API calls, longest form first."""
+    """Tìm vị trí các form API xuất hiện trong đoạn code.
+
+    Input : text  - str đoạn code
+            forms - list[str] từ surface_forms
+    Output: list[(start, end)] span ký tự, sắp tăng dần, không chồng lấn
+    """
     spans, taken = [], []
     for form in forms:
         for m in re.finditer(r"(?<![\w.])" + re.escape(form) + r"(?![\w])", text):
@@ -74,17 +91,28 @@ def find_spans(text, forms):
 
 
 def build_text(sample):
-    """Code snippet that is guaranteed to contain the deprecated call."""
+    """Chọn đoạn code để train, đảm bảo có chứa lời gọi deprecated.
+
+    Input : sample - dict một mẫu
+    Output: (text, forms) - text lấy từ trường function; nếu function không
+            chứa lời gọi thì lấy probing input + y_neg
+    """
     forms = surface_forms(sample)
     code = sample.get("function") or ""
     if find_spans(code, forms):
         return code, forms
-    # a few samples only carry the deprecated line in `y_neg`
+    # vài mẫu chỉ còn dòng deprecated trong y_neg
     return (sample.get("probing input") or "") + (sample.get("y_neg") or ""), forms
 
 
 def crop(text, spans, budget=2000):
-    """Keep a window around the first API call so it survives truncation."""
+    """Cắt bớt code dài, giữ cửa sổ quanh lời gọi API đầu tiên.
+
+    Input : text   - str đoạn code
+            spans  - list[(start, end)]
+            budget - số ký tự tối đa giữ lại
+    Output: (text đã cắt, spans đã dời chỉ số theo text mới)
+    """
     if len(text) <= budget or not spans:
         return text, spans
     start = max(0, spans[0][0] - budget // 2)
@@ -94,10 +122,15 @@ def crop(text, spans, budget=2000):
 
 
 # --------------------------------------------------------------------------- #
-# Dataset
+# Dữ liệu
 # --------------------------------------------------------------------------- #
 class DeprecatedApiMLM(Dataset):
-    """Tokenized code with a boolean flag marking the deprecated API tokens."""
+    """Tokenize sẵn toàn bộ mẫu và đánh dấu token nào là API deprecated.
+
+    Input : samples - list[dict] các mẫu, tokenizer, max_length
+    Output: mỗi phần tử là dict {input_ids, attention_mask, target_mask};
+            mẫu mất hết token API sau truncation thì bị bỏ
+    """
 
     def __init__(self, samples, tokenizer, max_length):
         self.features = []
@@ -108,6 +141,8 @@ class DeprecatedApiMLM(Dataset):
                 continue
             enc = tokenizer(text, truncation=True, max_length=max_length,
                             return_offsets_mapping=True)
+            # token là target nếu khoảng ký tự của nó chồng lên một span API;
+            # offset (0, 0) là token đặc biệt, không bao giờ bị che
             target = [
                 any(o_s < e and s_ < o_e for s_, e in spans) and o_e > o_s
                 for o_s, o_e in enc["offset_mapping"]
@@ -128,7 +163,11 @@ class DeprecatedApiMLM(Dataset):
 
 
 class MaskingCollator:
-    """Always masks the deprecated-API tokens; HF adds the random MLM masking."""
+    """Gộp nhiều mẫu thành một batch và đặt mask lên đó.
+
+    Input : tokenizer, random_mask_prob - tỉ lệ che ngẫu nhiên thêm
+            (bản dùng cho eval đặt 0.0 nên chỉ che token API)
+    """
 
     def __init__(self, tokenizer, random_mask_prob):
         self.pad_id = tokenizer.pad_token_id
@@ -137,6 +176,12 @@ class MaskingCollator:
             tokenizer, mlm_probability=random_mask_prob)
 
     def __call__(self, features):
+        """Pad về độ dài lớn nhất trong batch rồi đặt mask.
+
+        Input : features - list[dict] lấy từ DeprecatedApiMLM
+        Output: dict {input_ids đã che, attention_mask, labels}
+                labels = -100 ở vị trí không bị che
+        """
         width = max(len(f["input_ids"]) for f in features)
 
         def stack(key, pad_value):
@@ -147,23 +192,32 @@ class MaskingCollator:
         attention_mask = stack("attention_mask", 0)
         target = stack("target_mask", 0).bool()
 
-        # HF handles the random 15%-style masking (80/10/10, skips specials)
+        # HF lo phần che ngẫu nhiên (80/10/10, bỏ qua token đặc biệt)
         masked, labels = self.mlm.torch_mask_tokens(input_ids.clone())
-        # the API tokens are always masked, whatever the random draw did
+        # token API luôn bị che, bất kể lượt rút ngẫu nhiên ở trên
         masked[target] = self.mask_id
         labels[target] = input_ids[target]
+        # target_mask dừng ở đây; model chỉ nhận đúng 3 key này
         return {"input_ids": masked, "attention_mask": attention_mask,
                 "labels": labels}
 
 
 class MlmTrainer(Trainer):
-    """Evaluates with API-only masking so the early-stopping signal is stable."""
+    """Trainer dùng collator riêng lúc eval, để eval_loss không bị nhiễu.
+
+    Input : như Trainer, thêm eval_collator
+    """
 
     def __init__(self, *a, eval_collator=None, **kw):
         super().__init__(*a, **kw)
         self.eval_collator = eval_collator
 
     def get_eval_dataloader(self, eval_dataset=None):
+        """Dựng eval dataloader bằng eval_collator thay cho data_collator.
+
+        Input : eval_dataset - mặc định lấy self.eval_dataset
+        Output: DataLoader dùng cho vòng eval
+        """
         train_collator, self.data_collator = self.data_collator, self.eval_collator
         try:
             return super().get_eval_dataloader(eval_dataset)
@@ -172,12 +226,22 @@ class MlmTrainer(Trainer):
 
 
 def masked_accuracy(eval_pred):
+    """Tính tỉ lệ token bị che mà model đoán đúng.
+
+    Input : eval_pred - (preds đã argmax, labels; -100 = không bị che)
+    Output: dict {'masked_acc': float}
+    """
     preds, labels = eval_pred
     keep = labels != -100
     return {"masked_acc": float((preds[keep] == labels[keep]).mean())}
 
 
 def main():
+    """Nạp dữ liệu, chia 80/20, train với early stopping, lưu bản tốt nhất.
+
+    Input : tham số từ get_args, file JSON ở --data
+    Output: model + tokenizer ghi ra --output_dir
+    """
     args = get_args()
     set_seed(args.seed)
 
@@ -207,13 +271,14 @@ def main():
             logging_steps=50,
             evaluation_strategy="steps",
             save_strategy="steps",
+            # eval_steps phải bằng save_steps khi bật load_best_model_at_end
             eval_steps=args.eval_steps,
             save_steps=args.eval_steps,
             save_total_limit=2,
             load_best_model_at_end=True,
             metric_for_best_model="eval_loss",
             greater_is_better=False,
-            remove_unused_columns=False,  # keep target_mask for the collator
+            remove_unused_columns=False,  # giữ target_mask cho collator
             report_to=args.report_to,
             seed=args.seed,
         ),
@@ -222,6 +287,7 @@ def main():
         data_collator=MaskingCollator(tokenizer, args.random_mask_prob),
         eval_collator=MaskingCollator(tokenizer, 0.0),
         compute_metrics=masked_accuracy,
+        # argmax trước khi tích luỹ, nếu không eval giữ logits (N, 512, 50265)
         preprocess_logits_for_metrics=lambda logits, labels: logits.argmax(-1),
         callbacks=[EarlyStoppingCallback(early_stopping_patience=args.patience)],
     )
