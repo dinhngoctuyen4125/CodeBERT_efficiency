@@ -8,7 +8,7 @@
 #SBATCH --time=1:00:00
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=16
-#SBATCH --mem=16G
+#SBATCH --mem=4G
 
 # Chạy trực tiếp bằng bash: ghim GPU 0.
 # Chạy bằng sbatch: để Slurm cấp phát, ghim tay sẽ đè lên phân cấp của nó và
