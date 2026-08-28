@@ -16,5 +16,5 @@ pip install -r requirements.txt
 
 ```bash
 mkdir -p logs
-sbatch train_codebert.sh
+nohup python train_codebert.py > logs/train_codebert.log 2>&1 &
 ```
