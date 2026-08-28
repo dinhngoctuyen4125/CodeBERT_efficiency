@@ -23,7 +23,7 @@ def get_args():
     p.add_argument("--data", default="../Data-Collection/codellama/U_dep_test.json")
     p.add_argument("--model", default="microsoft/codebert-base-mlm")
     p.add_argument("--max_length", type=int, default=512)
-    p.add_argument("--batch_size", type=int, default=32)
+    p.add_argument("--batch_size", type=int, default=16)
     p.add_argument("--fp16", action="store_true")
     return p.parse_args()
 
