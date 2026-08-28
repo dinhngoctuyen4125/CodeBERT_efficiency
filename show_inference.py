@@ -102,6 +102,20 @@ def show(tokenizer, batch, preds, i=0):
         print(f"\n--- {name}  shape={tuple(tensor.shape)}  dtype={tensor.dtype} ---")
         print(textwrap.fill(str(tensor[i].tolist()), width=100))
 
+    # preds là OUTPUT của model (argmax logits), dùng để so với labels
+    print(f"\n--- preds (output model)  shape={tuple(preds.shape)}  dtype={preds.dtype} ---")
+    print(textwrap.fill(str(preds[i].tolist()), width=100))
+
+    # --- 6. So sánh trực quan 3 tensor tại vị trí mask ---
+    print(f"\n--- SO SÁNH TẠI VỊ TRÍ MASK: input_ids vs preds (output) vs labels ---")
+    print(f"{'pos':>5}  {'input_ids':>10}  {'preds':>10}  {'labels':>10}  {'input':15s}  {'output':15s}  {'label':15s}")
+    print("-" * 95)
+    for pos in mask_positions:
+        in_tok = tokenizer.decode([ids[pos]]).strip()
+        pr_tok = tokenizer.decode([pred_ids[pos]]).strip()
+        gt_tok = tokenizer.decode([labels[pos]]).strip()
+        print(f"{pos:5d}  {ids[pos]:>10d}  {pred_ids[pos]:>10d}  {labels[pos]:>10d}  {in_tok:15s}  {pr_tok:15s}  {gt_tok:15s}")
+
 
 @torch.no_grad()
 def main():
