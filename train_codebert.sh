@@ -10,4 +10,6 @@
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=128G
 
+export CUDA_VISIBLE_DEVICES=0
+
 /home/ritsu/miniconda3/envs/codebert/bin/python train_codebert.py --fp16
