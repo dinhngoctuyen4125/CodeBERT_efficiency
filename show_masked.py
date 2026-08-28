@@ -38,7 +38,11 @@ def show(tokenizer, ids_in, ids_out, labels):
     """
     mask_id = tokenizer.mask_token_id
     print("\n--- INPUT đưa vào model ---")
-    print(tokenizer.decode(ids_out, skip_special_tokens=True))
+    # không dùng skip_special_tokens: nó xoá luôn <mask>, tức đúng chỗ cần xem
+    text = tokenizer.decode(ids_out)
+    for special in (tokenizer.bos_token, tokenizer.eos_token, tokenizer.pad_token):
+        text = text.replace(special, "")
+    print(text)
 
     print("--- LABELS (chỉ vị trí != -100) ---")
     for i, lab in enumerate(labels):
