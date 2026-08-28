@@ -109,20 +109,22 @@ def build_text(sample):
     return (sample.get("probing input") or "") + (sample.get("y_neg") or ""), forms
 
 
-def crop(text, spans, budget=2000):
-    """Cắt bớt code dài, giữ cửa sổ quanh lời gọi API đầu tiên.
+def token_window(ids, target, max_length, bos_id, eos_id):
+    """Cắt chuỗi token dài, giữ cửa sổ quanh token API đầu tiên.
 
-    Input : text   - str đoạn code
-            spans  - list[(start, end)]
-            budget - số ký tự tối đa giữ lại
-    Output: (text đã cắt, spans đã dời chỉ số theo text mới)
+    Input : ids, target - hai list cùng độ dài, đã gồm <s> ... </s>
+            max_length  - số token tối đa
+            bos_id, eos_id - id của <s> và </s>
+    Output: (ids, target) dài đúng max_length, vẫn có <s> đầu và </s> cuối
+
+    Phải cắt theo token chứ không theo ký tự, vì truncation của tokenizer đo
+    bằng token; cắt theo ký tự sẽ để lọt đoạn ngắn nhưng nhiều token và lời
+    gọi API bị cắt mất.
     """
-    if len(text) <= budget or not spans:
-        return text, spans
-    start = max(0, spans[0][0] - budget // 2)
-    end = start + budget
-    kept = [(s - start, e - start) for s, e in spans if s >= start and e <= end]
-    return text[start:end], kept
+    body = max_length - 2
+    start = min(max(1, target.index(1) - body // 2), max(1, len(ids) - 1 - body))
+    return ([bos_id] + ids[start:start + body] + [eos_id],
+            [0] + target[start:start + body] + [0])
 
 
 # --------------------------------------------------------------------------- #
@@ -132,31 +134,36 @@ class DeprecatedApiMLM(Dataset):
     """Tokenize sẵn toàn bộ mẫu và đánh dấu token nào là API deprecated.
 
     Input : samples - list[dict] các mẫu, tokenizer, max_length
-    Output: mỗi phần tử là dict {input_ids, attention_mask, target_mask};
-            mẫu mất hết token API sau truncation thì bị bỏ
+    Output: mỗi phần tử là dict {input_ids, attention_mask, target_mask},
+            dài tối đa max_length và luôn còn ít nhất một token API
     """
 
     def __init__(self, samples, tokenizer, max_length):
         self.features = []
         for s in samples:
             text, forms = build_text(s)
-            text, spans = crop(text, find_spans(text, forms))
-            if not text.strip():
+            spans = find_spans(text, forms)
+            if not spans:
                 continue
-            enc = tokenizer(text, truncation=True, max_length=max_length,
-                            return_offsets_mapping=True)
+            # tokenize không truncation, để còn thấy token API ở cuối chuỗi dài
+            enc = tokenizer(text, return_offsets_mapping=True)
             # token là target nếu khoảng ký tự của nó chồng lên một span API;
             # offset (0, 0) là token đặc biệt, không bao giờ bị che
             target = [
-                any(o_s < e and s_ < o_e for s_, e in spans) and o_e > o_s
+                int(any(o_s < e and s_ < o_e for s_, e in spans) and o_e > o_s)
                 for o_s, o_e in enc["offset_mapping"]
             ]
             if not any(target):
                 continue
+            ids = enc["input_ids"]
+            if len(ids) > max_length:
+                ids, target = token_window(ids, target, max_length,
+                                           tokenizer.bos_token_id,
+                                           tokenizer.eos_token_id)
             self.features.append({
-                "input_ids": enc["input_ids"],
-                "attention_mask": enc["attention_mask"],
-                "target_mask": [int(t) for t in target],
+                "input_ids": ids,
+                "attention_mask": [1] * len(ids),
+                "target_mask": target,
             })
 
     def __len__(self):
