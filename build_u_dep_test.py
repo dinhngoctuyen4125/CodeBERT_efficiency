@@ -1,7 +1,3 @@
-"""Lọc các mẫu trong updated_dep.json có "function" trùng với D_test.json.
-
-Kết quả ghi ra U_dep_test.json, giữ nguyên mẫu gốc của updated_dep.json.
-"""
 import argparse
 import json
 

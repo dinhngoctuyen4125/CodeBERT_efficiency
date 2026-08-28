@@ -1,8 +1,3 @@
-"""Vẽ biểu đồ loss từ lịch sử huấn luyện mà Trainer đã ghi sẵn.
-
-Không cần sửa train_codebert.py: Trainer lưu toàn bộ log vào
-trainer_state.json trong mỗi checkpoint, script này chỉ đọc lại file đó.
-"""
 import argparse
 import glob
 import json
