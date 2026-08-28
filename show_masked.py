@@ -69,11 +69,12 @@ def main():
     dataset = DeprecatedApiMLM(samples[:args.n], tokenizer, args.max_length)
     collator = MaskingCollator(tokenizer, args.random_mask_prob)
 
+    # gói chung một batch như lúc train, để thấy cả phần padding
+    batch = collator([dataset[i] for i in range(len(dataset))])
     for i in range(len(dataset)):
-        feature = dataset[i]
-        batch = collator([feature])
-        print(f"\n{'=' * 78}\nMẪU {i}   (random_mask_prob={args.random_mask_prob})\n{'=' * 78}")
-        show(tokenizer, batch)
+        print(f"\n{'=' * 78}\nMẪU {i}/{len(dataset)}   "
+              f"(random_mask_prob={args.random_mask_prob})\n{'=' * 78}")
+        show(tokenizer, batch, i)
 
 
 if __name__ == "__main__":
