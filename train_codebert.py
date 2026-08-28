@@ -28,7 +28,7 @@ def get_args():
     p.add_argument("--output_dir", default="checkpoints/codebert-deprecated")
     p.add_argument("--max_length", type=int, default=512)
     p.add_argument("--epochs", type=float, default=10.0)
-    p.add_argument("--batch_size", type=int, default=16)
+    p.add_argument("--batch_size", type=int, default=32)
     p.add_argument("--lr", type=float, default=5e-5)
     p.add_argument("--weight_decay", type=float, default=0.01)
     p.add_argument("--warmup_ratio", type=float, default=0.06)
