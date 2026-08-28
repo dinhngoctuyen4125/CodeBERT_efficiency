@@ -24,7 +24,7 @@ from transformers import (
 
 def get_args():
     p = argparse.ArgumentParser()
-    p.add_argument("--data", default="data/codellama/D_forget.json")
+    p.add_argument("--data", default="../Data-Collection/codellama/D_forget.json")
     p.add_argument("--model", default="microsoft/codebert-base")
     p.add_argument("--output_dir", default="checkpoints/codebert-deprecated")
     p.add_argument("--max_length", type=int, default=512)
