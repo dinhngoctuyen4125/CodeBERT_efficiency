@@ -1,11 +1,3 @@
-"""Finetune CodeBERT bằng MLM có chủ đích trên API deprecated (D_forget).
-
-Che các token của lời gọi API deprecated rồi bắt model đoán lại chúng từ ngữ
-cảnh xung quanh, để model học được ngữ cảnh mà API deprecated xuất hiện.
-
-Luồng chạy: tìm vị trí API trong code (span ký tự) -> tokenize một lần và ghi
-lại token nào thuộc span đó -> che chúng ở mỗi batch -> train MLM.
-"""
 import argparse
 import json
 import random
