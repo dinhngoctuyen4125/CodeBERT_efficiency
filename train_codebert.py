@@ -79,10 +79,14 @@ def find_spans(text, forms):
     Input : text  - str đoạn code
             forms - list[str] từ surface_forms
     Output: list[(start, end)] span ký tự, sắp tăng dần, không chồng lấn
+
+    Lookbehind chỉ chặn ký tự chữ (không chặn dấu chấm), nên vẫn bắt được lời
+    gọi phương thức như es.render(); form ngắn nằm trong form dài đã khớp thì
+    danh sách taken lo. Lookahead chặn khớp nhầm tf.div trong tf.divide.
     """
     spans, taken = [], []
     for form in forms:
-        for m in re.finditer(r"(?<![\w.])" + re.escape(form) + r"(?![\w])", text):
+        for m in re.finditer(r"(?<!\w)" + re.escape(form) + r"(?![\w])", text):
             if any(s < m.end() and m.start() < e for s, e in taken):
                 continue
             taken.append((m.start(), m.end()))
