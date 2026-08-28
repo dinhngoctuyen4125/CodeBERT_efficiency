@@ -2,8 +2,8 @@ nohup: ignoring input
 The cache for model files in Transformers v4.22.0 has been updated. Migrating your old cache. This is a one-time only operation. You can interrupt this and resume the migration later on by calling `transformers.utils.move_cache()`.
 0it [00:00, ?it/s]0it [00:00, ?it/s]
 Token indices sequence length is longer than the specified maximum sequence length for this model (514 > 512). Running this sequence through the model will result in indexing errors
-model      : tummitum/codebert-deprecated-new
+model      : tummitum/codebert-deprecated
 data       : ../Data-Collection/codellama/U_dep_test.json
 mẫu        : 1310/1310
 token che  : 7605
-masked_acc : 0.9865  (7502/7605)
+masked_acc : 0.9867  (7504/7605)
