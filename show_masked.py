@@ -8,6 +8,7 @@ in ra đúng bằng những gì Trainer đưa vào model.
 """
 import argparse
 import json
+import textwrap
 
 from transformers import AutoTokenizer, set_seed
 
@@ -30,32 +31,30 @@ def get_args():
     return p.parse_args()
 
 
-def show(tokenizer, ids_in, ids_out, labels):
-    """In input đã che và bảng label của một mẫu.
+def show(tokenizer, batch, i=0):
+    """In đúng ba tensor mà model nhận, kèm bản decode để đọc.
 
-    Input : tokenizer, ids_in - token gốc, ids_out - sau khi che, labels
+    Input : tokenizer, batch - dict do MaskingCollator trả về, i - chỉ số mẫu
     Output: không trả về gì, chỉ in ra màn hình
     """
-    mask_id = tokenizer.mask_token_id
-    print("\n--- INPUT đưa vào model ---")
+    ids = batch["input_ids"][i].tolist()
+    labels = batch["labels"][i].tolist()
+
+    print("\n--- decode để đọc (không phải thứ model nhận) ---")
     # không dùng skip_special_tokens: nó xoá luôn <mask>, tức đúng chỗ cần xem
-    text = tokenizer.decode(ids_out)
+    text = tokenizer.decode(ids)
     for special in (tokenizer.bos_token, tokenizer.eos_token, tokenizer.pad_token):
         text = text.replace(special, "")
     print(text)
 
-    print("--- LABELS (chỉ vị trí != -100) ---")
-    for i, lab in enumerate(labels):
-        if lab == -100:
-            continue
-        token = tokenizer.convert_ids_to_tokens([lab])[0]
-        shown = "<mask>" if ids_out[i] == mask_id else \
-                tokenizer.convert_ids_to_tokens([ids_out[i]])[0]
-        # token API bị che 100%, token ngẫu nhiên theo 80/10/10 nên có thể
-        # giữ nguyên hoặc bị thay bằng token bừa
-        print(f"  vị trí {i:4}  input={shown:<14} label={lab:<6} = {token!r}")
+    for name in ("input_ids", "attention_mask", "labels"):
+        tensor = batch[name]
+        print(f"\n--- {name}  shape={tuple(tensor.shape)}  dtype={tensor.dtype} ---")
+        print(textwrap.fill(str(tensor[i].tolist()), width=100))
+
     n = sum(1 for lab in labels if lab != -100)
-    print(f"  => {n} vị trí có loss / {len(ids_in)} token")
+    print(f"\n=> {n}/{len(ids)} vị trí có loss   "
+          f"(<mask> = id {tokenizer.mask_token_id}, -100 = bỏ qua)")
 
 
 def main():
@@ -74,8 +73,7 @@ def main():
         feature = dataset[i]
         batch = collator([feature])
         print(f"\n{'=' * 78}\nMẪU {i}   (random_mask_prob={args.random_mask_prob})\n{'=' * 78}")
-        show(tokenizer, feature["input_ids"],
-             batch["input_ids"][0].tolist(), batch["labels"][0].tolist())
+        show(tokenizer, batch)
 
 
 if __name__ == "__main__":
