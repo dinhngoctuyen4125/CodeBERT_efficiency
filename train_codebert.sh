@@ -8,7 +8,7 @@
 #SBATCH --time=1:00:00
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=16
-#SBATCH --mem=24G
+#SBATCH --mem=32G
 
 export CUDA_VISIBLE_DEVICES=0
 
