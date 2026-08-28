@@ -24,7 +24,7 @@ def get_args():
     """
     p = argparse.ArgumentParser()
     p.add_argument("--data", default="../Data-Collection/codellama/U_dep_test.json")
-    p.add_argument("--model", default="checkpoints/codebert-deprecated")
+    p.add_argument("--model", default="tummitum/codebert-deprecated")
     p.add_argument("--target", default="replacement",
                    choices=["replacement", "deprecated"],
                    help="che API thay thế (code đã sửa) hay API deprecated")
