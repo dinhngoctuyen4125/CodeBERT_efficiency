@@ -1,5 +1,5 @@
---extra-index-url https://download.pytorch.org/whl/cu118
-torch==2.7.1+cu118
+--extra-index-url https://download.pytorch.org/whl/cu128
+torch==2.7.1+cu128
 transformers>=4.44.0,<4.45.0
 accelerate==0.33.0
 numpy==1.26.4

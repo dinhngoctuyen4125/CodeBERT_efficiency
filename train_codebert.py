@@ -25,7 +25,7 @@ from transformers import (
 def get_args():
     p = argparse.ArgumentParser()
     p.add_argument("--data", default="../Data-Collection/codellama/D_forget.json")
-    p.add_argument("--model", default="microsoft/codebert-base")
+    p.add_argument("--model", default="microsoft/codebert-base-mlm")
     p.add_argument("--output_dir", default="checkpoints/codebert-deprecated")
     p.add_argument("--max_length", type=int, default=512)
     p.add_argument("--epochs", type=float, default=10.0)
@@ -213,6 +213,7 @@ def main():
             load_best_model_at_end=True,
             metric_for_best_model="eval_loss",
             greater_is_better=False,
+            remove_unused_columns=False,  # keep target_mask for the collator
             report_to=args.report_to,
             seed=args.seed,
         ),
