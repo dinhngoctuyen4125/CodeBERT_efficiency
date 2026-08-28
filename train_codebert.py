@@ -1,0 +1,233 @@
+"""Finetune CodeBERT with targeted MLM on deprecated APIs (D_forget).
+
+The tokens of the deprecated API call are masked and the model must recover
+them from the surrounding code, so it learns the context deprecated APIs
+appear in.
+"""
+import argparse
+import json
+import random
+import re
+
+import torch
+from torch.utils.data import Dataset
+from transformers import (
+    AutoModelForMaskedLM,
+    AutoTokenizer,
+    DataCollatorForLanguageModeling,
+    EarlyStoppingCallback,
+    Trainer,
+    TrainingArguments,
+    set_seed,
+)
+
+
+def get_args():
+    p = argparse.ArgumentParser()
+    p.add_argument("--data", default="data/codellama/D_forget.json")
+    p.add_argument("--model", default="microsoft/codebert-base")
+    p.add_argument("--output_dir", default="checkpoints/codebert-deprecated")
+    p.add_argument("--max_length", type=int, default=512)
+    p.add_argument("--epochs", type=float, default=10.0)
+    p.add_argument("--batch_size", type=int, default=16)
+    p.add_argument("--lr", type=float, default=5e-5)
+    p.add_argument("--weight_decay", type=float, default=0.01)
+    p.add_argument("--warmup_ratio", type=float, default=0.06)
+    p.add_argument("--random_mask_prob", type=float, default=0.1,
+                   help="extra random MLM masking on non-API tokens")
+    p.add_argument("--val_ratio", type=float, default=0.2)
+    p.add_argument("--eval_steps", type=int, default=250)
+    p.add_argument("--patience", type=int, default=3,
+                   help="early stopping patience, in evaluations")
+    p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--fp16", action="store_true")
+    p.add_argument("--report_to", default="none")
+    return p.parse_args()
+
+
+# --------------------------------------------------------------------------- #
+# Locating the deprecated API inside the code
+# --------------------------------------------------------------------------- #
+def surface_forms(sample):
+    """All ways the deprecated API can be written in source code."""
+    deprecated = set(sample.get("deprecated api") or [])
+    forms = set()
+    for alias, full in (sample.get("alias dict") or {}).items():
+        if full in deprecated:
+            forms.add(alias)
+    for api in deprecated:
+        forms.add(api)
+        forms.add(api.split(".")[-1])
+    return sorted({f for f in forms if f}, key=len, reverse=True)
+
+
+def find_spans(text, forms):
+    """Non-overlapping char spans of the API calls, longest form first."""
+    spans, taken = [], []
+    for form in forms:
+        for m in re.finditer(r"(?<![\w.])" + re.escape(form) + r"(?![\w])", text):
+            if any(s < m.end() and m.start() < e for s, e in taken):
+                continue
+            taken.append((m.start(), m.end()))
+            spans.append((m.start(), m.end()))
+    return sorted(spans)
+
+
+def build_text(sample):
+    """Code snippet that is guaranteed to contain the deprecated call."""
+    forms = surface_forms(sample)
+    code = sample.get("function") or ""
+    if find_spans(code, forms):
+        return code, forms
+    # a few samples only carry the deprecated line in `y_neg`
+    return (sample.get("probing input") or "") + (sample.get("y_neg") or ""), forms
+
+
+def crop(text, spans, budget=2000):
+    """Keep a window around the first API call so it survives truncation."""
+    if len(text) <= budget or not spans:
+        return text, spans
+    start = max(0, spans[0][0] - budget // 2)
+    end = start + budget
+    kept = [(s - start, e - start) for s, e in spans if s >= start and e <= end]
+    return text[start:end], kept
+
+
+# --------------------------------------------------------------------------- #
+# Dataset
+# --------------------------------------------------------------------------- #
+class DeprecatedApiMLM(Dataset):
+    """Tokenized code with a boolean flag marking the deprecated API tokens."""
+
+    def __init__(self, samples, tokenizer, max_length):
+        self.features = []
+        for s in samples:
+            text, forms = build_text(s)
+            text, spans = crop(text, find_spans(text, forms))
+            if not text.strip():
+                continue
+            enc = tokenizer(text, truncation=True, max_length=max_length,
+                            return_offsets_mapping=True)
+            target = [
+                any(o_s < e and s_ < o_e for s_, e in spans) and o_e > o_s
+                for o_s, o_e in enc["offset_mapping"]
+            ]
+            if not any(target):
+                continue
+            self.features.append({
+                "input_ids": enc["input_ids"],
+                "attention_mask": enc["attention_mask"],
+                "target_mask": [int(t) for t in target],
+            })
+
+    def __len__(self):
+        return len(self.features)
+
+    def __getitem__(self, i):
+        return self.features[i]
+
+
+class MaskingCollator:
+    """Always masks the deprecated-API tokens; HF adds the random MLM masking."""
+
+    def __init__(self, tokenizer, random_mask_prob):
+        self.pad_id = tokenizer.pad_token_id
+        self.mask_id = tokenizer.mask_token_id
+        self.mlm = DataCollatorForLanguageModeling(
+            tokenizer, mlm_probability=random_mask_prob)
+
+    def __call__(self, features):
+        width = max(len(f["input_ids"]) for f in features)
+
+        def stack(key, pad_value):
+            return torch.tensor([f[key] + [pad_value] * (width - len(f[key]))
+                                 for f in features])
+
+        input_ids = stack("input_ids", self.pad_id)
+        attention_mask = stack("attention_mask", 0)
+        target = stack("target_mask", 0).bool()
+
+        # HF handles the random 15%-style masking (80/10/10, skips specials)
+        masked, labels = self.mlm.torch_mask_tokens(input_ids.clone())
+        # the API tokens are always masked, whatever the random draw did
+        masked[target] = self.mask_id
+        labels[target] = input_ids[target]
+        return {"input_ids": masked, "attention_mask": attention_mask,
+                "labels": labels}
+
+
+class MlmTrainer(Trainer):
+    """Evaluates with API-only masking so the early-stopping signal is stable."""
+
+    def __init__(self, *a, eval_collator=None, **kw):
+        super().__init__(*a, **kw)
+        self.eval_collator = eval_collator
+
+    def get_eval_dataloader(self, eval_dataset=None):
+        train_collator, self.data_collator = self.data_collator, self.eval_collator
+        try:
+            return super().get_eval_dataloader(eval_dataset)
+        finally:
+            self.data_collator = train_collator
+
+
+def masked_accuracy(eval_pred):
+    preds, labels = eval_pred
+    keep = labels != -100
+    return {"masked_acc": float((preds[keep] == labels[keep]).mean())}
+
+
+def main():
+    args = get_args()
+    set_seed(args.seed)
+
+    with open(args.data, encoding="utf-8") as f:
+        samples = json.load(f)
+    random.Random(args.seed).shuffle(samples)
+
+    tokenizer = AutoTokenizer.from_pretrained(args.model)
+    model = AutoModelForMaskedLM.from_pretrained(args.model)
+
+    n_val = int(len(samples) * args.val_ratio)
+    train_set = DeprecatedApiMLM(samples[n_val:], tokenizer, args.max_length)
+    eval_set = DeprecatedApiMLM(samples[:n_val], tokenizer, args.max_length)
+    print(f"train={len(train_set)} eval={len(eval_set)}")
+
+    trainer = MlmTrainer(
+        model=model,
+        args=TrainingArguments(
+            output_dir=args.output_dir,
+            num_train_epochs=args.epochs,
+            per_device_train_batch_size=args.batch_size,
+            per_device_eval_batch_size=args.batch_size,
+            learning_rate=args.lr,
+            weight_decay=args.weight_decay,
+            warmup_ratio=args.warmup_ratio,
+            fp16=args.fp16,
+            logging_steps=50,
+            evaluation_strategy="steps",
+            save_strategy="steps",
+            eval_steps=args.eval_steps,
+            save_steps=args.eval_steps,
+            save_total_limit=2,
+            load_best_model_at_end=True,
+            metric_for_best_model="eval_loss",
+            greater_is_better=False,
+            report_to=args.report_to,
+            seed=args.seed,
+        ),
+        train_dataset=train_set,
+        eval_dataset=eval_set,
+        data_collator=MaskingCollator(tokenizer, args.random_mask_prob),
+        eval_collator=MaskingCollator(tokenizer, 0.0),
+        compute_metrics=masked_accuracy,
+        preprocess_logits_for_metrics=lambda logits, labels: logits.argmax(-1),
+        callbacks=[EarlyStoppingCallback(early_stopping_patience=args.patience)],
+    )
+    trainer.train()
+    trainer.save_model(args.output_dir)
+    tokenizer.save_pretrained(args.output_dir)
+
+
+if __name__ == "__main__":
+    main()
